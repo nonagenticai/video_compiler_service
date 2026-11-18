@@ -1,0 +1,7 @@
+# Grandfathered assertion-free tests — see scripts/check_vacuous_tests.py.
+# One `path::name` nodeid per line. This list may only SHRINK: fix a test, delete
+# its line, and lower MAX_VACUOUS_TESTS in tests/test_vacuous_test_guard.py.
+# All three are "must not raise" tests — the absence of an exception IS the check.
+tests/test_audioless_clip_guard.py::test_uniformity_guard_still_passes_real_uniform_clips
+tests/unit/test_metering.py::test_close_metering_redis_none_is_noop
+tests/unit/test_metering.py::test_compile_emit_cost_noop_when_disabled

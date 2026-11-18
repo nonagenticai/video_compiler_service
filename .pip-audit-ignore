@@ -1,0 +1,3 @@
+# pip-audit ignores: one CVE / GHSA ID per line (# comments OK).
+# Add an entry only when the vulnerability is verified as not exploitable
+# in this service's runtime, with a link to the analysis.

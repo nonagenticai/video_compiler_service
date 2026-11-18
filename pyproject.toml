@@ -1,0 +1,156 @@
+[project]
+license = "Apache-2.0"
+name = "video-compiler-service"
+version = "0.1.0"
+description = "Sync video compiler — turns a list of storyboard shots into an MP4 via ffmpeg, returns a presigned MinIO URL."
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.135.0",
+    "uvicorn[standard]>=0.41.0",
+    "pydantic>=2.12.0",
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j fixed in 2.14.2
+    "httpx>=0.28.0",
+    "miniopy-async>=1.23.0",
+    "prometheus-client>=0.24.0",
+    "python-dotenv>=1.2.0",
+    "redis>=5.2",
+    "structlog>=25.4.0",
+    "w2v-common>=0.104.0",
+    # Durable compile-job store (Postgres 18 + psycopg3 only; no asyncpg/sqlite).
+    "psycopg[binary,pool]>=3.3.0",
+    "sqlalchemy[asyncio]>=2.0.48",
+    "alembic>=1.18.0",
+
+    # --- Security floors on transitive dependencies ---
+    # Neither of these is imported by this service directly; both arrive through
+    # other pins — aiohttp via miniopy-async (and its aiohttp-retry dep), which
+    # is the MinIO client every compiled artifact is uploaded through, and
+    # cryptography via pyjwt and w2v-common (license-token verification). The
+    # fleet-wide CVE work already moved the LOCK to safe versions; these floors
+    # are what stop it drifting back. A lock is a point-in-time resolution, so
+    # the next unrelated `uv lock` is free to walk an undeclared transitive down
+    # again. The declared floor is the only thing that binds it.
+    # Precedent + shape: analysis_service PRs #175/#176.
+    #
+    # aiohttp 3.14.1 was flagged by CVE-2026-59881 + CVE-2026-69243 (fixed in
+    # 3.14.2) and CVE-2026-69244 (fixed in 3.14.3); 3.14.3 was then flagged by
+    # CVE-2026-111063 + CVE-2026-111064 + GHSA-2g87-pp6c-29x5 (fixed in 3.14.4).
+    "aiohttp>=3.14.4",
+    # cryptography: CVE-2026-69247 (GHSA-g6cj-pr64-35w5) was introduced in
+    # 44.0.0 and fixed in 50.0.0, so the previously-locked 49.0.0 was affected.
+    "cryptography>=50.0.0",
+]
+
+[tool.uv]
+override-dependencies = [
+    # miniopy-async (1.23.5, the LATEST) caps the CA-certificate bundle:
+    #   certifi>=2025.1.31,<2026.0.0
+    # That is lazy upper-bounding, not a real incompatibility -- certifi's entire
+    # public API is where()/contents() and has been stable for years, while the
+    # package's whole purpose is to ship CURRENT roots. Left alone the cap pins
+    # every MinIO-using repo in this fleet to a trust store from Nov 2025, and no
+    # relock cadence can move it (verified by making uv name the constraint).
+    #
+    # NOT overriding miniopy-async's argon2-cffi<24.0.0 alongside it: that is a
+    # MAJOR bump with real API surface, so it needs its own testing rather than
+    # riding along with a data-only package.
+    "certifi>=2026.7.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# LOUD, not silent: this expression DESELECTS `integration` everywhere, and CI
+# re-selects it NOWHERE (.github/workflows/ci-cd.yaml passes no test-select
+# input). Anything wearing `integration` therefore runs on NO machine at all.
+# `tests/test_no_unrun_marker_tests.py` fails the build if any test wears it
+# without a written waiver. As of 2026-09-07 ZERO tests wear it.
+addopts = "-m 'not integration'"
+markers = [
+    # ⛔ NEVER SELECTED ANYWHERE. Reserved for a test that needs a LIVE PEER
+    # SERVICE or real outbound network — not merely ffmpeg (the archetype
+    # installs it via `extra_apt: ffmpeg`) and not merely Postgres (an ephemeral
+    # one is provisioned per job). Use `render` for real-encode tests instead.
+    "integration: DESELECTED by addopts and re-selected nowhere in CI — a test wearing this executes on no machine; requires a waiver in tests/test_no_unrun_marker_tests.py",
+    "render: real-ffmpeg render-harness tests that need ffmpeg + ffprobe on the runner (SELECTED in CI; the archetype installs ffmpeg)",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.0",
+    "ty>=0.0.23",
+    "pip-audit>=2.10.0",
+    # pip is a transitive dep of pip-audit (pip-audit -> pip-api -> pip).
+    # Explicit floor: pip < 26.2 is vulnerable to PYSEC-2026-3721.
+    "pip>=26.2",
+    "detect-secrets>=1.5.0",
+    "pytest-cov>=7.0.0",
+    "bandit>=1.9.4",
+    "pytest-timeout>=2.4.0",
+    "fakeredis>=2.34.0",
+]
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "I", "N", "W", "UP", "ANN", "B", "BLE", "A", "S", "C901",
+    "RUF", "RET", "SIM", "ASYNC", "PTH", "TID251",
+]
+ignore = ["E501", "B008" ]
+
+# uuid7 is the id standard (stdlib, py3.14). TID251 bans `uuid4` in production
+# code via ruff — enforced in CI (`ruff check .`), not only local pre-commit.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"uuid.uuid4".msg = "uuid7 is the w2v id standard — use uuid.uuid7() (stdlib, py3.14)."
+
+[tool.ruff.lint.per-file-ignores]
+"src/database/migrations/*" = ["I001", "ANN"]
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S107", "S108", "ANN", "PTH", "ASYNC230", "ASYNC240", "TID251"]
+
+# ── ANN401 ratchet (see [tool.ruff.lint].ignore note) ─────────────────────────
+# These files still carry `Any` in a function signature. Do NOT add to this list.
+# When you type a file's seam with pydantic models, DELETE its line here — that
+# re-enables ANN401 for the file and locks the win in. Target: empty.
+"src/api/routes/compile.py" = ["ANN401"]
+"src/services/cadence.py" = ["ANN401"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+import-not-found = "error"
+unresolved-reference = "error"
+missing-attribute = "error"
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+missing-argument = "error"
+invalid-argument-type = "error"
+invalid-explicit-return = "error"
+
+[tool.uv.sources]
+# The published source tree resolves its shared library from the public
+# repository at the release tag; the private index is not reachable here.
+w2v-common = { git = "https://github.com/nonagenticai/w2v_common", tag = "v0.115.4" }

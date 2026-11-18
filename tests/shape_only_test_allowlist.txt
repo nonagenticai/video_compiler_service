@@ -1,0 +1,3 @@
+# Grandfathered shape-only tests (every assertion is a call count / call position).
+# Checked by the `no-vacuous-tests` pre-commit hook. May only shrink.
+tests/unit/test_metering.py::test_compile_emit_cost_swallows_redis_errors
